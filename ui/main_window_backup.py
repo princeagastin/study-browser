@@ -2,7 +2,7 @@ import os
 import time
 import traceback
 from urllib.parse import unquote
-from ui.ai_hub import AIHub
+from ui.study_panel import StudyPanel
 
 from PySide6.QtCore import Qt, QUrl, QTimer, QRect, QStandardPaths
 from PySide6.QtGui import QShortcut, QKeySequence, QDesktopServices, QGuiApplication
@@ -130,11 +130,11 @@ class MainWindow(QMainWindow):
         wlay.addWidget(self.devtools)
         crow.addWidget(self.web_area, 1)
 
-        # AI Hub: switch between multiple AI web assistants
-        self.ai_hub = AIHub(self.content)
-        self.ai_hub.hide()
-        crow.addWidget(self.ai_hub)
-        self.ai_hub.request_close.connect(self.ai_hub.hide)
+        # AI Study Assistant
+        self.study_panel = StudyPanel(self.content)
+        self.study_panel.hide()
+        crow.addWidget(self.study_panel)
+        self.study_panel.request_close.connect(self.study_panel.hide)
 
         root.addWidget(self.content, 1)
 
@@ -367,7 +367,7 @@ class MainWindow(QMainWindow):
         bind("Ctrl+H", lambda: self.panels.show_panel(self.history_panel))
         bind("Ctrl+J", lambda: self.panels.show_panel(self.downloads_panel))
         bind("Ctrl+Alt+N", self._notes_hotkey)
-        bind("Ctrl+Shift+Y", self.toggle_ai_hub)
+        bind("Ctrl+Shift+Y", self.toggle_study_panel)
         bind("Ctrl+F", self._show_find)
         bind("Ctrl+R", self._reload_stop)
         bind("F5", self._reload_stop)
@@ -400,18 +400,20 @@ class MainWindow(QMainWindow):
         self.manager.set_current(tabs[-1] if number == 9 else
                                  tabs[number - 1] if len(tabs) >= number else tabs[-1])
 
-    # ------------------------------------------------------------ AI Hub
-    def toggle_ai_hub(self):
-        if self.ai_hub.isVisible():
-            self.ai_hub.hide()
-            return
-        self.ai_hub.show()
-        self.ai_hub.raise_()
-        view = self.ai_hub.current_view()
-        if view is not None:
-            view.setFocus()
-
     # ------------------------------------------------------------ helpers
+    def toggle_study_panel(self):
+        """Show/hide the AI Study Assistant for the current tab."""
+        if self.study_panel.isVisible():
+            self.study_panel.hide()
+            return
+
+        tab = self.manager.current
+        if tab and tab.view is not None:
+            self.study_panel.set_view(tab.view)
+
+        self.study_panel.show()
+        self.study_panel.raise_()
+
     def _page(self):
         return self.manager.current.page if self.manager.current else None
 
@@ -526,6 +528,10 @@ class MainWindow(QMainWindow):
         self._on_title(tab.title)
         self.topbar.set_loading(tab.loading)
         self.topbar.omni.set_private(tab.private)
+
+        # Keep Study AI connected to the active browser tab.
+        self.study_panel.set_view(tab.view)
+
         if self.devtools.isVisible():
             self.devtools.inspect(tab.page)
 
@@ -785,9 +791,7 @@ class MainWindow(QMainWindow):
         self._set_fullscreen(request.toggleOn())
 
     def _escape(self):
-        if self.ai_hub.isVisible():
-            self.ai_hub.hide()
-        elif self.palette.isVisible():
+        if self.palette.isVisible():
             self.palette.hide()
         elif self.find_bar.isVisible():
             self.find_bar.close_bar()

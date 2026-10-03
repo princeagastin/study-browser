@@ -268,6 +268,7 @@ class Omnibox(QFrame):
 
 
 class TopBar(QWidget):
+    ai_clicked = Signal()
     back_clicked = Signal()
     forward_clicked = Signal()
     reload_stop_clicked = Signal()
@@ -320,6 +321,9 @@ class TopBar(QWidget):
         self.library = self._btn("saved", "Library — saved, notes, history")
         self.library.clicked.connect(lambda _c=False: self.library_clicked.emit())
         self.menu = self._btn("dots", "Menu")
+        self.ai_btn = self._btn("ai", "Study Assistant") # Or use a star/sparkle icon name from your assets
+        self.ai_btn.clicked.connect(lambda _c=False: self.ai_clicked.emit())
+        lay.addWidget(self.ai_btn) # Add it to the layout
         self.menu.clicked.connect(lambda _c=False: self.menu_clicked.emit())
         for w in (self.shield, self.downloads, self.library, self.menu):
             lay.addWidget(w)

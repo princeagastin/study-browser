@@ -16,5 +16,7 @@ build/
 dist/
 *.egg-info/
 
-*.logbrowser_profile/
+*.log
 browser_profile/
+browser_profile/
+cloud_session.json

@@ -3,13 +3,17 @@ import time
 import traceback
 from urllib.parse import unquote
 from ui.ai_hub import AIHub
-
+from browser.cloud_sync import CloudSync
+from ui.account_dialog import AccountDialog
 from PySide6.QtCore import Qt, QUrl, QTimer, QRect, QStandardPaths
 from PySide6.QtGui import QShortcut, QKeySequence, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                               QStackedWidget, QFileDialog, QMessageBox,
-                               QApplication, QInputDialog, QDialog, QLineEdit,
-                               QLabel, QDialogButtonBox, QFormLayout)
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QStackedWidget, QFileDialog, QMessageBox,
+    QApplication, QInputDialog, QDialog, QLineEdit,
+    QLabel, QDialogButtonBox, QFormLayout, QPushButton
+)
+                               
 
 from browser import omni
 from browser.engine import HOME_URL
@@ -71,6 +75,7 @@ class MainWindow(QMainWindow):
     def __init__(self, storage, profiles):
         super().__init__()
         self.storage = storage
+        self.cloud = CloudSync()
         self.profiles = profiles
         self.session = SessionManager()
         self.safety = SafetyEngine(self)
@@ -108,6 +113,12 @@ class MainWindow(QMainWindow):
         root.addWidget(self.strip)
         self.topbar = TopBar(central)
         root.addWidget(self.topbar)
+        self.account_button = QPushButton("👤 Guest", self.topbar)
+        self.account_button.setObjectName("accountButton")
+        self.account_button.clicked.connect(self._open_account)
+
+        if self.topbar.layout() is not None:
+            self.topbar.layout().addWidget(self.account_button)
         self.bookmarks_bar = BookmarksBar(storage, central)
         self.bookmarks_bar.open_url.connect(lambda u, _n: self._open_from_panel(u))
         root.addWidget(self.bookmarks_bar)
@@ -224,6 +235,8 @@ class MainWindow(QMainWindow):
 
         self.manager.new_tab()
         QTimer.singleShot(0, self._sync_chrome)
+        self._update_account_button()
+        QTimer.singleShot(500, self._restore_cloud_session)
         if storage.get_setting("restore_on_start", "0") == "1":
             QTimer.singleShot(300, self._restore_session)
 
@@ -353,6 +366,7 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(seq), self).activated.connect(slot)
         m = self.manager
         bind("Ctrl+T", lambda: m.new_tab())
+        bind("Ctrl+Shift+L", self._open_account)
         bind("Ctrl+Shift+P", lambda: m.new_tab(private=True))
         bind("Ctrl+W", lambda: m.close_tab(m.current.id) if m.current else None)
         bind("Ctrl+Shift+T", self._reopen)
@@ -414,6 +428,104 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ helpers
     def _page(self):
         return self.manager.current.page if self.manager.current else None
+
+    def _open_account(self):
+        dlg = AccountDialog(self.cloud, self)
+        dlg.exec()
+
+        self._update_account_button()
+
+        if self.cloud.logged_in:
+            self._sync_cloud_bookmarks()
+
+    def _update_account_button(self):
+        if self.cloud.logged_in:
+            username = self.cloud.user["username"]
+            self.account_button.setText(f"👤 {username}")
+            self.account_button.setToolTip(
+                f"Signed in as {username}"
+            )
+        else:
+            self.account_button.setText("👤 Guest")
+            self.account_button.setToolTip(
+                "Not signed in — click to sign in"
+            )
+    
+    def _sync_cloud_bookmarks(self):
+        try:
+            bookmarks = self.cloud.get_bookmarks()
+            added = 0
+
+            for bookmark in bookmarks:
+                url = bookmark["url"]
+                title = bookmark["title"] or url
+
+                if not self.storage.is_saved(url):
+                    self.storage.save_page(url, title)
+                    added += 1
+
+            self.saved_panel.reload()
+            self.bookmarks_bar.refresh()
+
+            self.toast.show_message(
+                f"Synced {added} bookmark(s)",
+                "check",
+            )
+
+        except Exception as exc:
+            print(f"Cloud bookmark sync failed: {exc}")
+
+            self.toast.show_message(
+                "Cloud bookmark sync failed",
+                "check",
+            )
+    def _restore_cloud_session(self):
+        if not self.cloud.token:
+            return
+
+        had_session = self.cloud.logged_in
+
+        if not self.cloud.verify_session():
+            if had_session and not self.cloud.token:
+                self.toast.show_message(
+                    "Cloud session expired — please sign in again",
+                    "check",
+                )
+            return
+
+        self._sync_cloud_bookmarks()
+    
+    def _sync_cloud_bookmarks(self):
+        try:
+            bookmarks = self.cloud.get_bookmarks()
+
+            added = 0
+
+            for bookmark in bookmarks:
+                url = bookmark["url"]
+                title = bookmark["title"] or url
+
+                if not self.storage.is_saved(url):
+                    self.storage.save_page(url, title)
+                    added += 1
+
+            self.saved_panel.reload()
+            self.bookmarks_bar.refresh()
+
+            username = self.cloud.user["username"]
+
+            self.toast.show_message(
+                f"Synced {added} bookmark(s) for {username}",
+                "check",
+            )
+
+        except Exception as exc:
+            print(f"Cloud bookmark sync failed: {exc}")
+
+            self.toast.show_message(
+                "Could not sync cloud bookmarks",
+                "check",
+            )
 
     def _tabs_for_suggest(self):
         return [(t.id, t.title, t.url, t.private) for t in self.manager.tabs
@@ -908,16 +1020,64 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ saved/notes
     def _toggle_save(self):
         tab = self.manager.current
+
         if not tab or not tab.url.startswith("http"):
             return
-        if self.storage.is_saved(tab.url):
-            self.storage.unsave(tab.url)
-            self.toast.show_message("Removed from library", "star")
+
+        url = tab.url
+        title = tab.title or url
+
+        if self.storage.is_saved(url):
+            # Remove from local storage
+            self.storage.unsave(url)
+
+            # Remove from account if logged in
+            if self.cloud.logged_in:
+                try:
+                    self.cloud.remove_bookmark_by_url(url)
+                except Exception as exc:
+                    print(f"Cloud bookmark removal failed: {exc}")
+
+            self.toast.show_message(
+                "Removed from library",
+                "star",
+            )
+
         else:
-            self.storage.save_page(tab.url, tab.title or tab.url)
-            self.toast.show_message("Saved to your library", "check",
-                                    "Add note", lambda: self._notes_hotkey())
-        self.topbar.omni.set_saved(self.storage.is_saved(tab.url))
+            # Save locally
+            self.storage.save_page(url, title)
+
+            # Save to account if logged in
+            if self.cloud.logged_in:
+                try:
+                    self.cloud.save_bookmark(title, url)
+
+                    self.toast.show_message(
+                        "Saved and synced",
+                        "check",
+                        "Add note",
+                        lambda: self._notes_hotkey(),
+                    )
+
+                except Exception as exc:
+                    print(f"Cloud bookmark sync failed: {exc}")
+
+                    self.toast.show_message(
+                        "Saved locally — cloud sync failed",
+                        "check",
+                    )
+            else:
+                self.toast.show_message(
+                    "Saved locally",
+                    "check",
+                    "Add note",
+                    lambda: self._notes_hotkey(),
+                )
+
+        self.topbar.omni.set_saved(
+            self.storage.is_saved(url)
+        )
+
         self.saved_panel.reload()
         self.bookmarks_bar.refresh()
 
